@@ -890,12 +890,20 @@ def run_tracking(opts: TrackingOptions) -> Path:
             print(f"[track] keeping existing {path}")
             continue
         _run_selected(opts, [int(acq_id)], path)
-    return combine_per_acq_pickles(str(opts.tracks_path.with_name(f"{opts.tracks_path.stem}_acq*.pkl")), opts.tracks_path)
+    return combine_per_acq_pickles(
+        str(opts.tracks_path.with_name(f"{opts.tracks_path.stem}_acq*.pkl")),
+        opts.tracks_path, selected_acq_ids=selected,
+    )
 
 
-def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
+def combine_per_acq_pickles(
+    pattern: str, output_path: Path, selected_acq_ids: list[int] | None = None,
+) -> Path:
     pattern_path = Path(pattern)
     paths = sorted(pattern_path.parent.glob(pattern_path.name), key=_acq_id_from_path)
+    if selected_acq_ids is not None:
+        by_id = {_acq_id_from_path(path): path for path in paths}
+        paths = [by_id[acq_id] for acq_id in selected_acq_ids]
     if not paths:
         raise SystemExit(f"No per-acquisition pickles matched {pattern}")
 
@@ -903,6 +911,8 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
     selected_ids = []
     base = None
     frames_per_acq = None
+    frame_offset = 0
+    acq_frame_counts = []
     for order, path in enumerate(paths):
         acq = _acq_id_from_path(path)
         selected_ids.append(acq)
@@ -912,22 +922,28 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
         fp = int(data.get("frames_per_acq") or data.get("n_frames") or 0)
         if fp <= 0:
             raise ValueError(f"Cannot determine frames_per_acq for {path}")
-        frames_per_acq = fp
+        if frames_per_acq is None:
+            frames_per_acq = fp
+        acq_frame_counts.append(fp)
         for track in data.get("tracks", []):
             positions = np.asarray(track["positions"], dtype=np.float32)
-            frames = np.asarray(track["frames"], dtype=np.float32) + order * fp
+            frames = np.asarray(track["frames"], dtype=np.float32) + frame_offset
             out = dict(track)
             out["positions"] = positions
             out["frames"] = frames
             out["length"] = int(len(frames))
-            out["acq_index"] = int(acq)
+            out["id"] = len(combined_tracks)
+            out["acq_index"] = order
+            out["acq_id"] = int(acq)
             combined_tracks.append(out)
+        frame_offset += fp
 
     assert base is not None and frames_per_acq is not None
     base["tracks"] = combined_tracks
     base["n_acquisitions"] = len(paths)
     base["frames_per_acq"] = int(frames_per_acq)
-    base["n_frames"] = int(frames_per_acq * len(paths))
+    base["n_frames"] = frame_offset
+    base["acq_frame_counts"] = acq_frame_counts
     base.setdefault("params", {})
     base["params"].update(
         {
@@ -939,6 +955,9 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
     )
     base.pop("detections_by_frame", None)
     base.pop("intensities_by_frame", None)
+    # Per-acquisition detection arrays have local frames; do not mislabel the
+    # first acquisition's arrays as detections for the whole combined output.
+    base.pop("detections", None)
     dump_pickle(base, output_path)
     print(f"Combined {len(paths)} per-acquisition pickles -> {output_path}")
     return output_path
