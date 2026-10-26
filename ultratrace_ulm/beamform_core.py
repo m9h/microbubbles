@@ -351,7 +351,10 @@ def beamform_iq(
         del dc
 
     iq_cp = cp.asarray(iq)
-    all_beamformed = []
+    # Compound on the GPU: summing the per-angle results into one (n_points, n_frames)
+    # buffer avoids stacking num_angles full-size arrays on the host (on a DGX Spark the
+    # host stack/astype/sum of 4 x 2 GB took ~110 s against ~3 s of kernel time).
+    compound_cp = cp.zeros((n_scan, num_frames), dtype=cp.complex64)
     for angle_idx in range(num_angles):
         ch = iq_cp[:, angle_idx, :, :, :].reshape(num_frames, num_rows * num_cols, num_time)
         ch = cp.transpose(ch, (1, 2, 0))[cp.newaxis, ...]  # (1, n_rx, n_samples, n_frames)
@@ -370,14 +373,16 @@ def beamform_iq(
             modulation_freq_hz=config.tx_freq_hz,
             tukey_alpha=0.5,
         )  # (n_points, n_frames)
-        bf = bf.reshape(grid.depth_pixels, grid.height_pixels, grid.width_pixels, num_frames)
-        all_beamformed.append(cp.asnumpy(bf))
+        compound_cp += bf
+        del bf
 
-    # (A, z, elev, x, F) -> compound over angles -> (F, elev, z, x)
-    beamformed_all = np.stack(all_beamformed, axis=0).astype(np.complex64)
-    compound = beamformed_all.sum(axis=0)  # (z, elev, x, F)
-    compound = np.transpose(compound, (3, 1, 0, 2)).astype(np.complex64)  # (F, elev, z, x)
-    return compound, grid
+    # (z, elev, x, F) -> (F, elev, z, x), transposed on the GPU, one copy to host
+    compound_cp = compound_cp.reshape(
+        grid.depth_pixels, grid.height_pixels, grid.width_pixels, num_frames
+    )
+    compound = cp.asnumpy(cp.ascontiguousarray(cp.transpose(compound_cp, (3, 1, 0, 2))))
+    del compound_cp
+    return compound.astype(np.complex64, copy=False), grid
 
 
 # --------------------------------------------------------------------------- #
