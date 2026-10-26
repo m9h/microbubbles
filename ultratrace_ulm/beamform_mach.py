@@ -14,7 +14,8 @@ dependency (see beamform_core).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 
 import h5py
@@ -133,6 +134,57 @@ def _write_acq(out: h5py.File, out_id: int, compound: np.ndarray, grid) -> None:
     gg.create_dataset("z", data=grid.z.astype(np.float64))
 
 
+def _resume_signature(opts: BeamformOptions, config: NeutralConfig, ids: list[int]) -> str:
+    """Identify the source and all settings that affect the saved images."""
+    source = opts.input_path.resolve()
+    stat = source.stat()
+    return json.dumps({
+        "format": 1,
+        "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+        "config": asdict(config),
+        "source_acq_ids": ids,
+        "tgc": {"enabled": opts.spatial_tgc, "acqs": opts.tgc_acqs,
+                "sigma_lambda": opts.tgc_sigma_lambda, "svd_cut": opts.tgc_svd_cut},
+    }, sort_keys=True)
+
+
+def _acq_complete(out: h5py.File, out_id: int, source_id: int) -> bool:
+    """Only reuse acquisitions whose data and grid were fully flushed."""
+    group = out.get(f"acquisitions/{out_id}")
+    if group is None or not group.attrs.get("complete", False):
+        return False
+    if group.attrs.get("source_acq_id") != source_id:
+        return False
+    try:
+        frames, elev, depth, width = group["meta/compound_image"].shape
+        return frames > 0 and all(
+            group[f"meta/grid/{axis}"].shape == (depth, elev, width) for axis in "xyz"
+        )
+    except (KeyError, ValueError):
+        return False
+
+
+def _compute_tgc(h5: h5py.File, ids: list[int], config: NeutralConfig, opts: BeamformOptions):
+    tgc_ids = ids
+    if opts.tgc_acqs and opts.tgc_acqs < len(ids):
+        sel = np.unique(np.linspace(0, len(ids) - 1, opts.tgc_acqs).round().astype(int))
+        tgc_ids = [ids[i] for i in sel]
+    print(f"[tgc] beamforming {len(tgc_ids)} acq(s) for global TGC", flush=True)
+    compounds = []
+    ref_grid = None
+    for acq_id in tgc_ids:
+        iq, txd, txd_elev = _load_acq(h5, acq_id)
+        compound, grid = beamform_iq(iq, txd, txd_elev, config)
+        if ref_grid is None:
+            ref_grid = grid
+        compounds.append(compound)
+    print(f"[tgc] computing global TGC from {len(tgc_ids)} acq(s)", flush=True)
+    return compute_global_tgc(
+        compounds, ref_grid, tx_freq_hz=config.tx_freq_hz,
+        svd_cut=opts.tgc_svd_cut, sigma_lambda=opts.tgc_sigma_lambda,
+    )
+
+
 def beamform_mach(opts: BeamformOptions) -> Path:
     if opts.dry_run:
         print("MACH beamforming dry run only; no output written.")
@@ -140,43 +192,30 @@ def beamform_mach(opts: BeamformOptions) -> Path:
 
     with h5py.File(opts.input_path, "r") as h5:
         config = _load_neutral_config(h5, opts)
-        total = len(_neutral_acq_ids(h5))
-        ids = selected_acquisitions(total, opts)
+        source_ids = _neutral_acq_ids(h5)
+        ids = [source_ids[i] for i in selected_acquisitions(len(source_ids), opts)]
+        signature = _resume_signature(opts, config, ids)
+        resume_existing = opts.resume and opts.output_path.exists()
+        if resume_existing:
+            # Validate read-only, before touching a previous result or running a kernel.
+            with h5py.File(opts.output_path, "r") as previous:
+                saved = previous.attrs.get("beamform_signature")
+                if saved is None:
+                    raise ValueError(
+                        "Cannot resume output without provenance metadata. Use a new output, "
+                        "run --force to rebuild, or run --beamformed to use a known complete legacy file."
+                    )
+                if saved != signature:
+                    raise ValueError(
+                        "Cannot resume: source, selection, or beamforming settings do not match. "
+                        "Use a new output or run --force to rebuild."
+                    )
 
-        # Pass 1 (optional): derive the spatial-TGC profile from a small subset
-        # of acqs, holding only that subset in memory (not all of them).
-        inv_sqrt = None
-        if opts.spatial_tgc:
-            tgc_ids = ids
-            if opts.tgc_acqs and opts.tgc_acqs < len(ids):
-                sel = np.unique(
-                    np.linspace(0, len(ids) - 1, opts.tgc_acqs).round().astype(int)
-                )
-                tgc_ids = [ids[i] for i in sel]
-            print(f"[tgc] beamforming {len(tgc_ids)} acq(s) for global TGC", flush=True)
-            tgc_compounds = []
-            ref_grid = None
-            for acq_id in tgc_ids:
-                iq, txd, txd_elev = _load_acq(h5, acq_id)
-                compound, grid = beamform_iq(iq, txd, txd_elev, config)
-                if ref_grid is None:
-                    ref_grid = grid
-                tgc_compounds.append(compound)
-            print(f"[tgc] computing global TGC from {len(tgc_ids)} acq(s)", flush=True)
-            inv_sqrt = compute_global_tgc(
-                tgc_compounds,
-                ref_grid,
-                tx_freq_hz=config.tx_freq_hz,
-                svd_cut=opts.tgc_svd_cut,
-                sigma_lambda=opts.tgc_sigma_lambda,
-            )
-            del tgc_compounds
-
-        # Pass 2: beamform every acq and stream it straight to disk, keeping at
-        # most one compound volume in memory (the previous code kept all of them,
-        # which OOMs for full multi-hundred-acq runs).
         opts.output_path.parent.mkdir(parents=True, exist_ok=True)
-        with h5py.File(opts.output_path, "w") as out:
+        with h5py.File(opts.output_path, "r+" if resume_existing else "w") as out:
+            out.attrs["beamform_signature"] = signature
+            out.attrs["source_acq_ids"] = ids
+            out.attrs["beamform_complete"] = False
             out.attrs["description"] = (
                 f"MACH-beamformed neutral ultratrace from {opts.input_path.name} "
                 f"(z/x coarseness {opts.z_coarseness}, elev {opts.elev_planes}, "
@@ -193,15 +232,43 @@ def beamform_mach(opts: BeamformOptions) -> Path:
             frame_rate_hz = _neutral_frame_rate_hz(h5)
             if frame_rate_hz is not None:
                 out.attrs["frame_rate_hz"] = frame_rate_hz
-            for out_id, acq_id in enumerate(ids):
+            pending = [(out_id, acq_id) for out_id, acq_id in enumerate(ids)
+                       if not _acq_complete(out, out_id, acq_id)]
+            out.flush()
+
+            # Persist the same normalization for every resumed acquisition.
+            inv_sqrt = None
+            if opts.spatial_tgc and pending:
+                saved_tgc = out.get("spatial_tgc")
+                if saved_tgc is not None and saved_tgc.attrs.get("complete", False):
+                    inv_sqrt = saved_tgc[()]
+                else:
+                    inv_sqrt = _compute_tgc(h5, ids, config, opts)
+                    if "spatial_tgc" in out:
+                        del out["spatial_tgc"]
+                    saved_tgc = out.create_dataset("spatial_tgc", data=inv_sqrt)
+                    out.flush()
+                    saved_tgc.attrs["complete"] = True
+                    out.flush()
+
+            for out_id, acq_id in pending:
                 iq, txd, txd_elev = _load_acq(h5, acq_id)
                 print(f"[beamform] acq {acq_id}: iq {iq.shape} -> mach", flush=True)
                 compound, grid = beamform_iq(iq, txd, txd_elev, config)
                 if inv_sqrt is not None:
                     compound = (compound * inv_sqrt).astype(np.complex64)
+                group_path = f"acquisitions/{out_id}"
+                if group_path in out:
+                    del out[group_path]  # discard only the unfinished acquisition
                 _write_acq(out, out_id, compound, grid)
+                out.flush()
+                out[group_path].attrs["source_acq_id"] = acq_id
+                out[group_path].attrs["complete"] = True
+                out.flush()
                 print(f"[beamform] acq {acq_id}: compound {compound.shape} written", flush=True)
                 del compound, iq
+            out.attrs["beamform_complete"] = True
+            out.flush()
     print(f"DONE: {opts.output_path}")
     return opts.output_path
 

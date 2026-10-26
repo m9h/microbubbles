@@ -75,7 +75,8 @@ def _grids(data: dict, h5_path: Path | None):
         return grid_arrays(h5, acq)
 
 
-def lookup_intensities(tracks, all_speeds, h5_path, grids, pkl_n_acquisitions=None, svd_cutoff=0.0):
+def lookup_intensities(tracks, all_speeds, h5_path, grids, pkl_n_acquisitions=None,
+                       svd_cutoff=0.0, selected_acq_ids=None):
     """Sample SVD-filtered B-mode magnitude at each track point, normalized to [0, 1]."""
     grid_x, grid_y, grid_z = grids
     n_elev, n_z, n_x = grid_x.shape
@@ -88,8 +89,15 @@ def lookup_intensities(tracks, all_speeds, h5_path, grids, pkl_n_acquisitions=No
     with open_h5(h5_path) as h5:
         all_acq_ids = acq_keys(h5)
         n_h5_acqs = len(all_acq_ids)
-        if pkl_n_acquisitions is not None and pkl_n_acquisitions < n_h5_acqs:
-            acq_ids = all_acq_ids[-pkl_n_acquisitions:]
+        if selected_acq_ids is not None:
+            acq_ids = [int(aid) for aid in selected_acq_ids]
+            if not acq_ids or any(aid not in all_acq_ids for aid in acq_ids):
+                raise ValueError("Saved selected_acq_ids are missing from the beamformed file")
+        elif pkl_n_acquisitions is not None and pkl_n_acquisitions != n_h5_acqs:
+            raise ValueError(
+                "Subset intensity lookup needs params.selected_acq_ids in the tracks pickle; "
+                "re-track the subset or omit --beamformed."
+            )
         else:
             acq_ids = all_acq_ids
 
@@ -179,6 +187,7 @@ def export_tracks_bin_v3(
         intensities = lookup_intensities(
             tracks, all_speeds, beamformed, _grids(data, beamformed),
             pkl_n_acquisitions=data.get("n_acquisitions"), svd_cutoff=svd_cutoff,
+            selected_acq_ids=data.get("params", {}).get("selected_acq_ids"),
         )
     else:
         intensities = [np.ones(len(s), dtype=np.float32) for s in all_speeds]

@@ -764,10 +764,14 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
     all_acqs = []
     grid_x = grid_y = grid_z = None
     frames_per_acq = 0
+    tracks = []
+    acq_frame_counts = []
 
     with open_h5(opts.beamformed_path) as h5:
         for acq_order, acq_id in enumerate(selected):
+            frame_offset = len(detections_by_frame)
             compound = load_compound(h5, acq_id)
+            acq_frame_counts.append(int(compound.shape[0]))
             if frames_per_acq == 0:
                 frames_per_acq = int(compound.shape[0])
             grid_x, grid_y, grid_z = grid_arrays(h5, acq_id)
@@ -781,7 +785,7 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
             batch = _knee_filter_batch(batch, opts)
             print(f"[track] acq={acq_id} frames={filtered.shape[0]} shape={filtered.shape[1:]}")
             for frame_in_acq, (pixels, intensities, zscores) in enumerate(batch):
-                global_frame = acq_order * int(compound.shape[0]) + frame_in_acq
+                global_frame = frame_offset + frame_in_acq
                 if len(pixels) == 0:
                     detections_by_frame.append(np.empty((0, 3), dtype=np.float32))
                     intensities_by_frame.append(np.empty(0, dtype=np.float32))
@@ -802,11 +806,23 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
                 all_frames.append(np.full(len(positions), global_frame, dtype=np.int32))
                 all_acqs.append(np.full(len(positions), int(acq_id), dtype=np.int32))
 
+            # Acquisition boundaries do not establish temporal continuity. Link
+            # locally, then offset frames into the selected sequence for viewers.
+            acq_tracks = _track_detections(
+                detections_by_frame[frame_offset:], intensities_by_frame[frame_offset:],
+                opts, _grid_spacing(grid_x, grid_y, grid_z),
+            )
+            for track in acq_tracks:
+                track["frames"] = np.asarray(track["frames"]) + frame_offset
+                track["id"] = len(tracks)
+                track["acq_index"] = acq_order
+                track["acq_id"] = int(acq_id)
+                tracks.append(track)
+
     if grid_x is None or grid_y is None or grid_z is None:
         raise RuntimeError("No acquisitions processed")
 
     spacing = _grid_spacing(grid_x, grid_y, grid_z)
-    tracks = _track_detections(detections_by_frame, intensities_by_frame, opts, spacing)
     data = {
         "tracks": tracks,
         "density": None,
@@ -826,9 +842,11 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
         "spacing": spacing,
         "n_acquisitions": len(selected),
         "frames_per_acq": int(frames_per_acq),
+        "acq_frame_counts": acq_frame_counts,
         "n_frames": int(len(detections_by_frame)),
         "params": {
             "standalone_tracker": True,
+            "boundary_safe_per_acq": True,
             "selected_acq_ids": [int(v) for v in selected],
             "frame_origin": "selected_sequence",
             "sigma_threshold": float(opts.sigma_threshold),

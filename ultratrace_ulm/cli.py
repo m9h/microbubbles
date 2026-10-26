@@ -152,38 +152,32 @@ def cmd_run(args: argparse.Namespace) -> None:
         if raw_input is None:
             _stage("Download sample ultratrace")
             raw_input = work / SAMPLE_FILENAME
-            if raw_input.exists() and not args.force:
-                print(f"Using existing {raw_input} (--force to re-download)")
-            else:
-                download_sample(args.url, raw_input, force=args.force, downloader=args.downloader)
+            download_sample(args.url, raw_input, force=args.force, downloader=args.downloader)
 
         # 2. Beamform raw -> beamformed.h5
         beamformed = work / "beamformed.h5"
-        if beamformed.exists() and not args.force:
-            _stage(f"Beamform (skipped, {beamformed.name} exists)")
-        else:
-            _stage("Beamform")
-            beamform_ns = argparse.Namespace(
-                input=str(raw_input),
-                output=str(beamformed),
-                acq_start=args.acq_start if args.acq_start is not None else 0,
-                num_acqs=args.num_acqs if args.num_acqs is not None else 1,
-                acq_step=args.acq_step,
-                all_acqs=args.all_acqs,
-                elev_planes=25,
-                z_coarseness=0.5,
-                x_coarseness=0.5,
-                no_large_fov=False,
-                xlarge_fov=False,
-                n_chunks=4,
-                spatial_tgc=args.spatial_tgc,
-                tgc_acqs=12,
-                tgc_sigma_lambda=9.0,
-                tgc_svd_cut=0.05,
-                resume=False,
-                dry_run=False,
-            )
-            beamform_mach(make_beamform_options(beamform_ns))
+        _stage("Beamform")
+        beamform_ns = argparse.Namespace(
+            input=str(raw_input),
+            output=str(beamformed),
+            acq_start=args.acq_start if args.acq_start is not None else 0,
+            num_acqs=args.num_acqs if args.num_acqs is not None else 1,
+            acq_step=args.acq_step,
+            all_acqs=args.all_acqs,
+            elev_planes=25,
+            z_coarseness=0.5,
+            x_coarseness=0.5,
+            no_large_fov=False,
+            xlarge_fov=False,
+            n_chunks=4,
+            spatial_tgc=args.spatial_tgc,
+            tgc_acqs=12,
+            tgc_sigma_lambda=9.0,
+            tgc_svd_cut=0.05,
+            resume=not args.force,
+            dry_run=False,
+        )
+        beamform_mach(make_beamform_options(beamform_ns))
 
     # 3. Track + smooth + export bins
     tracks = work / "tracks.pkl"
@@ -191,9 +185,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     track_ns = argparse.Namespace(
         beamformed=str(beamformed),
         tracks=str(tracks),
-        num_acqs=args.num_acqs,
-        acq_start=args.acq_start,
-        acq_step=args.acq_step,
+        # Raw inputs have already been selected and renumbered by beamforming.
+        num_acqs=args.num_acqs if args.beamformed else None,
+        acq_start=args.acq_start if args.beamformed else None,
+        acq_step=args.acq_step if args.beamformed else 1,
         output_per_acq=False,
         sigma_threshold=2.0,
         svd_low_cutoff=0.1,
@@ -364,6 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tracks", required=True)
     p.add_argument("--smoothed", default=None)
     p.add_argument("--smooth-sigma", type=float, default=2.0)
+    p.add_argument("--smooth-method", choices=["gaussian", "3dulm"], default="gaussian")
+    p.add_argument("--smooth-window", type=int, default=5)
+    p.add_argument("--smooth-interp-factor", type=float, default=0.1)
     p.add_argument("--export-dir", required=True)
     p.add_argument("--export-stem", default=None)
     p.add_argument("--min-lengths", type=int, nargs="+", default=[5, 20, 50])
