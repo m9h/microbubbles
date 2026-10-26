@@ -106,8 +106,9 @@ ultratrace-ulm run \
 
 Writes everything under `--work-dir` (default `outputs/`): the downloaded
 sample, `beamformed.h5`, `tracks.pkl` / `tracks_smoothed.pkl`, `tracks_min*.bin`,
-and the `viewer/` bundle. Stages whose outputs already exist are skipped unless
-`--force` is given.
+and the `viewer/` bundle. Downloads are checked and resumed, and beamforming
+reuses completed acquisitions when the source and settings match. Tracking,
+exports, and viewers are rebuilt. `--force` restarts downloading and beamforming.
 
 - `--input RAW.h5` — beamform this raw file instead of downloading the sample.
 - `--beamformed B.h5` — start from an existing beamformed file (skip download
@@ -126,6 +127,17 @@ ultratrace-ulm beamform \
 Beamform a slice with `--acq-start` / `--num-acqs` / `--acq-step`, or the whole
 file with `--all-acqs`. Requires the `[mach]` extra and a CUDA GPU.
 
+Add `--resume` to continue an interrupted beamform with the same source,
+acquisition selection, grid, and TGC settings. Completed acquisitions are
+preserved; unfinished acquisitions are recomputed. The spatial TGC profile is
+saved and reused so resumed images share the same normalization. Source identity
+uses the resolved path, file size, and modification time.
+
+Older beamformed files have no resume metadata and cannot be resumed safely.
+Use `run --beamformed OLD.h5` for a known complete file, a new output path to
+rebuild, or `run --force` to replace it. An existing filename alone does not mark
+a stage complete.
+
 ### track
 
 ```bash
@@ -139,6 +151,11 @@ ultratrace-ulm track \
 
 Writes `outputs/tracks.pkl` and a smoothed `outputs/tracks_smoothed.pkl`. Add
 `--export-dir`/`--min-lengths` (or use `track-export`) to also emit `.bin` files.
+
+Tracks are linked within each acquisition; they never bridge acquisition
+boundaries or skipped acquisitions. Saved frames use cumulative offsets in the
+selected sequence for viewing, and acquisition IDs retain their source mapping.
+`--output-per-acq` saves intermediate pickles and combines only the selected IDs.
 
 #### Recommended recipe
 
@@ -183,6 +200,8 @@ cd outputs/viewer && python3 -m http.server 8080
 ```
 
 `--beamformed` is optional and only used to sample per-point B-mode intensity.
+Subset intensity lookup uses `params.selected_acq_ids` from the tracks pickle.
+For older subset pickles without that mapping, re-track or omit `--beamformed`.
 
 ### volume
 
@@ -220,6 +239,30 @@ Every viewer bundle is static — serve its directory with any file server:
 ```bash
 cd outputs/viewer && python3 -m http.server 8080   # http://localhost:8080
 ```
+
+## Tests
+
+The CPU suite uses small synthetic H5 files and needs neither CUDA nor the
+96 GB sample:
+
+```bash
+uv sync --frozen
+uv run --frozen python -m unittest discover -s tests -v
+```
+
+It covers acquisition boundaries, interrupted beamforming, resume compatibility,
+TGC reuse, subset selection, CLI export, viewer mapping, and GPU-compounding
+layout through a CPU stand-in. GitHub Actions runs it on Python 3.10 and 3.14.
+
+On a CUDA host, also compare real MACH/CuPy compounding with host summation:
+
+```bash
+uv sync --frozen --extra mach-cuda12
+ULM_TEST_CUDA=1 .venv/bin/python -m unittest tests.test_beamform_compound -v
+```
+
+Use `mach-cuda13` for a CUDA 13 host. The real CUDA test is skipped unless
+`ULM_TEST_CUDA=1`; CPU checks do not establish GPU performance or peak memory.
 
 ## License
 

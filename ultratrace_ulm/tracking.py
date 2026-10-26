@@ -764,10 +764,14 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
     all_acqs = []
     grid_x = grid_y = grid_z = None
     frames_per_acq = 0
+    tracks = []
+    acq_frame_counts = []
 
     with open_h5(opts.beamformed_path) as h5:
         for acq_order, acq_id in enumerate(selected):
+            frame_offset = len(detections_by_frame)
             compound = load_compound(h5, acq_id)
+            acq_frame_counts.append(int(compound.shape[0]))
             if frames_per_acq == 0:
                 frames_per_acq = int(compound.shape[0])
             grid_x, grid_y, grid_z = grid_arrays(h5, acq_id)
@@ -781,7 +785,7 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
             batch = _knee_filter_batch(batch, opts)
             print(f"[track] acq={acq_id} frames={filtered.shape[0]} shape={filtered.shape[1:]}")
             for frame_in_acq, (pixels, intensities, zscores) in enumerate(batch):
-                global_frame = acq_order * int(compound.shape[0]) + frame_in_acq
+                global_frame = frame_offset + frame_in_acq
                 if len(pixels) == 0:
                     detections_by_frame.append(np.empty((0, 3), dtype=np.float32))
                     intensities_by_frame.append(np.empty(0, dtype=np.float32))
@@ -802,11 +806,23 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
                 all_frames.append(np.full(len(positions), global_frame, dtype=np.int32))
                 all_acqs.append(np.full(len(positions), int(acq_id), dtype=np.int32))
 
+            # Acquisition boundaries do not establish temporal continuity. Link
+            # locally, then offset frames into the selected sequence for viewers.
+            acq_tracks = _track_detections(
+                detections_by_frame[frame_offset:], intensities_by_frame[frame_offset:],
+                opts, _grid_spacing(grid_x, grid_y, grid_z),
+            )
+            for track in acq_tracks:
+                track["frames"] = np.asarray(track["frames"]) + frame_offset
+                track["id"] = len(tracks)
+                track["acq_index"] = acq_order
+                track["acq_id"] = int(acq_id)
+                tracks.append(track)
+
     if grid_x is None or grid_y is None or grid_z is None:
         raise RuntimeError("No acquisitions processed")
 
     spacing = _grid_spacing(grid_x, grid_y, grid_z)
-    tracks = _track_detections(detections_by_frame, intensities_by_frame, opts, spacing)
     data = {
         "tracks": tracks,
         "density": None,
@@ -826,9 +842,11 @@ def _run_selected(opts: TrackingOptions, selected: list[int], output_path: Path)
         "spacing": spacing,
         "n_acquisitions": len(selected),
         "frames_per_acq": int(frames_per_acq),
+        "acq_frame_counts": acq_frame_counts,
         "n_frames": int(len(detections_by_frame)),
         "params": {
             "standalone_tracker": True,
+            "boundary_safe_per_acq": True,
             "selected_acq_ids": [int(v) for v in selected],
             "frame_origin": "selected_sequence",
             "sigma_threshold": float(opts.sigma_threshold),
@@ -872,12 +890,20 @@ def run_tracking(opts: TrackingOptions) -> Path:
             print(f"[track] keeping existing {path}")
             continue
         _run_selected(opts, [int(acq_id)], path)
-    return combine_per_acq_pickles(str(opts.tracks_path.with_name(f"{opts.tracks_path.stem}_acq*.pkl")), opts.tracks_path)
+    return combine_per_acq_pickles(
+        str(opts.tracks_path.with_name(f"{opts.tracks_path.stem}_acq*.pkl")),
+        opts.tracks_path, selected_acq_ids=selected,
+    )
 
 
-def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
+def combine_per_acq_pickles(
+    pattern: str, output_path: Path, selected_acq_ids: list[int] | None = None,
+) -> Path:
     pattern_path = Path(pattern)
     paths = sorted(pattern_path.parent.glob(pattern_path.name), key=_acq_id_from_path)
+    if selected_acq_ids is not None:
+        by_id = {_acq_id_from_path(path): path for path in paths}
+        paths = [by_id[acq_id] for acq_id in selected_acq_ids]
     if not paths:
         raise SystemExit(f"No per-acquisition pickles matched {pattern}")
 
@@ -885,6 +911,8 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
     selected_ids = []
     base = None
     frames_per_acq = None
+    frame_offset = 0
+    acq_frame_counts = []
     for order, path in enumerate(paths):
         acq = _acq_id_from_path(path)
         selected_ids.append(acq)
@@ -894,22 +922,28 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
         fp = int(data.get("frames_per_acq") or data.get("n_frames") or 0)
         if fp <= 0:
             raise ValueError(f"Cannot determine frames_per_acq for {path}")
-        frames_per_acq = fp
+        if frames_per_acq is None:
+            frames_per_acq = fp
+        acq_frame_counts.append(fp)
         for track in data.get("tracks", []):
             positions = np.asarray(track["positions"], dtype=np.float32)
-            frames = np.asarray(track["frames"], dtype=np.float32) + order * fp
+            frames = np.asarray(track["frames"], dtype=np.float32) + frame_offset
             out = dict(track)
             out["positions"] = positions
             out["frames"] = frames
             out["length"] = int(len(frames))
-            out["acq_index"] = int(acq)
+            out["id"] = len(combined_tracks)
+            out["acq_index"] = order
+            out["acq_id"] = int(acq)
             combined_tracks.append(out)
+        frame_offset += fp
 
     assert base is not None and frames_per_acq is not None
     base["tracks"] = combined_tracks
     base["n_acquisitions"] = len(paths)
     base["frames_per_acq"] = int(frames_per_acq)
-    base["n_frames"] = int(frames_per_acq * len(paths))
+    base["n_frames"] = frame_offset
+    base["acq_frame_counts"] = acq_frame_counts
     base.setdefault("params", {})
     base["params"].update(
         {
@@ -921,6 +955,9 @@ def combine_per_acq_pickles(pattern: str, output_path: Path) -> Path:
     )
     base.pop("detections_by_frame", None)
     base.pop("intensities_by_frame", None)
+    # Per-acquisition detection arrays have local frames; do not mislabel the
+    # first acquisition's arrays as detections for the whole combined output.
+    base.pop("detections", None)
     dump_pickle(base, output_path)
     print(f"Combined {len(paths)} per-acquisition pickles -> {output_path}")
     return output_path
