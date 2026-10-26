@@ -2,7 +2,7 @@ import numpy as np
 
 from ultratrace_ulm.runtime import dump_pickle
 from ultratrace_ulm.track_viewer_export import export_tracks_bin_v3
-from tests.helpers import FileTestCase, GRID, X, Y, Z, write_beamformed
+from tests.helpers import FileTestCase, X, Y, Z, write_beamformed
 
 
 class ViewerMappingTests(FileTestCase):
