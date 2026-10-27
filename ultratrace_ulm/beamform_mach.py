@@ -25,6 +25,7 @@ from .beamform_core import (
     NeutralConfig,
     beamform_iq,
     compute_global_tgc,
+    validate_chunk_count,
 )
 
 
@@ -174,7 +175,7 @@ def _compute_tgc(h5: h5py.File, ids: list[int], config: NeutralConfig, opts: Bea
     ref_grid = None
     for acq_id in tgc_ids:
         iq, txd, txd_elev = _load_acq(h5, acq_id)
-        compound, grid = beamform_iq(iq, txd, txd_elev, config)
+        compound, grid = beamform_iq(iq, txd, txd_elev, config, n_chunks=opts.n_chunks)
         if ref_grid is None:
             ref_grid = grid
         compounds.append(compound)
@@ -186,6 +187,7 @@ def _compute_tgc(h5: h5py.File, ids: list[int], config: NeutralConfig, opts: Bea
 
 
 def beamform_mach(opts: BeamformOptions) -> Path:
+    validate_chunk_count(opts.n_chunks)
     if opts.dry_run:
         print("MACH beamforming dry run only; no output written.")
         return opts.output_path
@@ -254,7 +256,7 @@ def beamform_mach(opts: BeamformOptions) -> Path:
             for out_id, acq_id in pending:
                 iq, txd, txd_elev = _load_acq(h5, acq_id)
                 print(f"[beamform] acq {acq_id}: iq {iq.shape} -> mach", flush=True)
-                compound, grid = beamform_iq(iq, txd, txd_elev, config)
+                compound, grid = beamform_iq(iq, txd, txd_elev, config, n_chunks=opts.n_chunks)
                 if inv_sqrt is not None:
                     compound = (compound * inv_sqrt).astype(np.complex64)
                 group_path = f"acquisitions/{out_id}"

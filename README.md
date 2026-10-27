@@ -20,6 +20,7 @@ The pipeline has three stages, each exposed as a CLI subcommand:
    or render a rotatable 3D SVD **volume viewer**.
 
 The `run` subcommand chains all three (plus the data download) into one command.
+The [development roadmap](ROADMAP.md) tracks GPU performance and memory work.
 
 ## Install
 
@@ -114,6 +115,7 @@ exports, and viewers are rebuilt. `--force` restarts downloading and beamforming
 - `--beamformed B.h5` — start from an existing beamformed file (skip download
   and beamforming).
 - `--frame-rate` is required by adaptive SVD; the sample runs at 222 Hz.
+- `--n-chunks N` controls GPU frame batching during beamforming (default 4).
 
 ### beamform
 
@@ -127,11 +129,32 @@ ultratrace-ulm beamform \
 Beamform a slice with `--acq-start` / `--num-acqs` / `--acq-step`, or the whole
 file with `--all-acqs`. Requires the `[mach]` extra and a CUDA GPU.
 
+`--n-chunks` now splits each acquisition's useful frames into balanced GPU
+batches. The default is 4; use 1 for a single batch, or a larger value to reduce
+frame-dependent IQ and image buffers. Counts larger than the useful frame count
+produce one frame per batch. Noise frames are removed once before batching.
+
+```bash
+ultratrace-ulm beamform --input sample_ultratrace.h5 --output beamformed.h5 \
+  --all-acqs --n-chunks 8 --resume
+# The end-to-end command exposes the same control:
+ultratrace-ulm run --input sample_ultratrace.h5 --n-chunks 8 --frame-rate 222
+```
+
+Angles are compounded on the GPU and copied directly into the final host output
+once per batch. Grid/transmit-arrival data are shared across batches. This keeps
+the `(frames, elev, z, x)` complex64 output format and frame order. Increasing
+the chunk count can increase kernel/transfer overhead; it does not reduce the
+shared transmit-distance workspace or the full host input/output allocations.
+Actual total GPU memory and timing still need measurement on a CUDA host.
+
 Add `--resume` to continue an interrupted beamform with the same source,
 acquisition selection, grid, and TGC settings. Completed acquisitions are
 preserved; unfinished acquisitions are recomputed. The spatial TGC profile is
 saved and reused so resumed images share the same normalization. Source identity
 uses the resolved path, file size, and modification time.
+The chunk count is an execution setting and may be changed when resuming; both
+TGC estimation and output beamforming use it for acquisitions still to process.
 
 Older beamformed files have no resume metadata and cannot be resumed safely.
 Use `run --beamformed OLD.h5` for a known complete file, a new output path to
@@ -252,9 +275,12 @@ uv run --frozen python -m unittest discover -s tests -v
 
 It covers acquisition boundaries, interrupted beamforming, resume compatibility,
 TGC reuse, subset selection, CLI export, viewer mapping, and GPU-compounding
-layout through a CPU stand-in. GitHub Actions runs it on Python 3.10 and 3.14.
+layout through a CPU stand-in. Chunking checks also cover frame ordering,
+uneven batches, noise removal, buffer lifetimes, and CLI validation before any
+download or output write. GitHub Actions runs it on Python 3.10 and 3.14.
 
-On a CUDA host, also compare real MACH/CuPy compounding with host summation:
+On a CUDA host, also compare real MACH/CuPy compounding with host summation and
+compare chunked execution against that reference:
 
 ```bash
 uv sync --frozen --extra mach-cuda12

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .beamform_core import validate_chunk_count
 from .beamform_mach import beamform_mach, make_options as make_beamform_options
 from .download import SAMPLE_FILENAME, SAMPLE_URL, download_sample
 from .tracking import (
@@ -32,13 +33,27 @@ def add_beamform_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--x-coarseness", type=float, default=0.5)
     parser.add_argument("--no-large-fov", action="store_true")
     parser.add_argument("--xlarge-fov", action="store_true")
-    parser.add_argument("--n-chunks", type=int, default=4)
+    add_chunk_arg(parser)
     parser.add_argument("--spatial-tgc", action="store_true")
     parser.add_argument("--tgc-acqs", type=int, default=12)
     parser.add_argument("--tgc-sigma-lambda", type=float, default=9.0)
     parser.add_argument("--tgc-svd-cut", type=float, default=0.05)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+
+
+def add_chunk_arg(parser: argparse.ArgumentParser) -> None:
+    def positive_count(value: str) -> int:
+        try:
+            return validate_chunk_count(int(value))
+        except ValueError:
+            raise argparse.ArgumentTypeError("must be a positive integer") from None
+
+    parser.add_argument(
+        "--n-chunks", type=positive_count, default=4,
+        help="Split useful frames into this many GPU batches (default: 4); "
+        "more batches reduce IQ/image device memory. Use 1 for a single batch.",
+    )
 
 
 def add_tracking_args(parser: argparse.ArgumentParser, require_beamformed: bool = True) -> None:
@@ -169,7 +184,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             x_coarseness=0.5,
             no_large_fov=False,
             xlarge_fov=False,
-            n_chunks=4,
+            n_chunks=args.n_chunks,
             spatial_tgc=args.spatial_tgc,
             tgc_acqs=12,
             tgc_sigma_lambda=9.0,
@@ -324,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--svd-method", choices=["fast", "full", "adaptive", "none"], default="adaptive")
     p.add_argument("--spatial-tgc", action="store_true", help="Spatial TGC during beamforming.")
+    add_chunk_arg(p)
     p.add_argument("--min-length", type=int, default=35, help="Min track length for the viewer.")
     p.add_argument("--export-min-lengths", type=int, nargs="+", default=[5, 20, 50])
     p.add_argument("--acq-start", type=int, default=None)

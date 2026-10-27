@@ -123,3 +123,14 @@ class FrameChunkIntegrationTests(FileTestCase):
              patch.object(cli, "write_track_viewer"):
             cli.main(["run", "--input", str(self.raw), "--work-dir", str(self.root), "--n-chunks", "8"])
         self.assertEqual(beamformer.call_args.args[0].n_chunks, 8)
+
+    def test_invalid_run_chunk_count_fails_before_any_stage(self):
+        with patch.object(cli, "download_sample") as downloader, \
+             patch.object(cli, "beamform_mach") as beamformer, \
+             patch.object(cli, "run_tracking_outputs", return_value=self.root / "tracks.pkl"), \
+             patch.object(cli, "write_track_viewer"):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["run", "--work-dir", str(self.root), "--n-chunks", "0"])
+        self.assertEqual(raised.exception.code, 2)
+        downloader.assert_not_called()
+        beamformer.assert_not_called()
