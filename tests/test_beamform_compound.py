@@ -16,7 +16,13 @@ class CompoundTests(unittest.TestCase):
     def test_angle_sum_layout_dtype_and_single_host_transfer(self):
         cp = ModuleType("cupy")
         cp.__dict__.update({k: v for k, v in np.__dict__.items() if not k.startswith("__")})
-        cp.asnumpy = Mock(side_effect=np.array)
+        def to_host(array, out=None):
+            if out is None:
+                return np.array(array)
+            np.copyto(out, array)
+            return out
+
+        cp.asnumpy = Mock(side_effect=to_host)
         rng = np.random.default_rng(7)
         config = core.NeutralConfig.from_h5_attrs(CONFIG)
         for angles in (1, 2, 4, 9):
@@ -60,3 +66,9 @@ class CompoundTests(unittest.TestCase):
         expected = np.stack(angle_outputs).sum(axis=0).reshape(*grid.x.shape, 3).transpose(3, 1, 0, 2)
         self.assertTrue(np.any(np.abs(expected) > 0), "Fixture must exercise nonzero beamforming")
         np.testing.assert_allclose(result, expected, rtol=2e-6, atol=1e-6)
+        for count in (2, 5):
+            with self.subTest(n_chunks=count):
+                chunked, _ = core.beamform_iq(
+                    iq, np.zeros((4, 4)), np.zeros((4, 2)), config, n_chunks=count,
+                )
+                np.testing.assert_allclose(chunked, expected, rtol=2e-6, atol=1e-6)
