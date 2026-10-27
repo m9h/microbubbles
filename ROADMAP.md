@@ -23,16 +23,24 @@ The opt-in CUDA test compares host compounding with both single-batch and
 chunked MACH execution. Run it on supported CUDA hardware before declaring
 hardware validation complete; no GPU timing or peak-memory result is recorded yet.
 
-## 2. Reproducible CUDA performance measurements — next
+## 2. Reproducible CUDA performance measurements — harness implemented; hardware runs pending
 
-- Add a small benchmark fixture and a command that records hardware, CUDA/CuPy/
-  MACH versions, grid dimensions, frame/angle counts, and chunk settings.
-- Report warm-up separately from repeated timings and compare chunked output
-  against the same numerical reference.
-- Measure device allocations and host memory; distinguish live allocation peaks
-  from memory retained by CuPy's pool. Compare settings in isolated processes so
-  an earlier large allocation cannot distort later results.
-- Save machine-readable results and a documented repeatable command. Use these
+The [benchmark command and protocol](BENCHMARKS.md) now provide a deterministic
+synthetic fixture, separate worker processes for each setting, synchronized
+warm-up/repeated timings, a host-compounded numerical reference, and JSON output.
+An additional instrumented pass distinguishes CuPy pool live/reserved peaks;
+process RSS is recorded before output serialization. CPU protocol tests and an
+opt-in CUDA smoke test cover the harness. Neither the real CUDA tests nor GPU
+timing/memory measurements have been executed on the development Mac.
+
+Remaining acceptance work:
+
+- Run both CUDA checks and collect the documented small/larger fixture reports
+  across frame/chunk counts on supported hardware.
+- Review numerical errors, synchronized timings, host RSS, and CuPy allocation
+  peaks; profile allocations outside CuPy separately before claiming total
+  device-memory savings.
+- Archive machine-readable results with hardware/software provenance. Use these
   measurements to choose batch defaults and assess the next optimizations.
 
 ## 3. Bound remaining workspaces and host memory — planned

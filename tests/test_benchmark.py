@@ -62,13 +62,14 @@ class BenchmarkTests(unittest.TestCase):
         meter.malloc(100)
         pool.used = 0  # first allocation freed, still reserved
         meter.malloc(60)
+        pool.reserved = 300  # cached/fragmented blocks exceed live allocations
         meter.malloc(80)
         pool.used = 0
         result = meter.snapshot()
         self.assertEqual(result["cupy_pool_live_peak_bytes"], 140)
-        self.assertEqual(result["cupy_pool_reserved_peak_bytes"], 140)
+        self.assertEqual(result["cupy_pool_reserved_peak_bytes"], 300)
         self.assertEqual(result["cupy_pool_live_after_bytes"], 0)
-        self.assertEqual(result["cupy_pool_reserved_after_bytes"], 140)
+        self.assertEqual(result["cupy_pool_reserved_after_bytes"], 300)
 
     def test_timing_synchronizes_and_excludes_instrumented_memory_pass(self):
         spec = bench.Fixture(frames=2)
@@ -108,13 +109,13 @@ class BenchmarkTests(unittest.TestCase):
         self.assertGreater(result["memory"]["process_peak_rss_bytes"], 0)
         self.assertEqual(output.dtype, np.complex64)
 
-    def test_reference_sums_host_angles_in_output_layout(self):
+    def test_reference_sums_host_angles_with_one_frame_on_device(self):
         spec = bench.Fixture(frames=2, angles=3)
-        angles = [np.full((GRID.x.size, 2), i + 1j, dtype=np.complex64) for i in (1, 2, 3)]
-        expected = np.sum(angles, axis=0).reshape(*GRID.x.shape, 2).transpose(3, 1, 0, 2)
+        angles = [np.full((GRID.x.size, 1), i + 1j, dtype=np.complex64) for i in (1, 2, 3, 4, 5, 6)]
+        expected = np.stack([np.full((3, 11, 17), 6 + 3j), np.full((3, 11, 17), 15 + 3j)]).astype(np.complex64)
 
         def beamform(*args, **kwargs):
-            self.assertEqual(kwargs["n_chunks"], 1)
+            self.assertEqual(kwargs["n_chunks"], spec.frames)
             for _ in angles:
                 bench.core._mach_beamform(channel_data=None)
             return expected.copy(), GRID
@@ -126,6 +127,17 @@ class BenchmarkTests(unittest.TestCase):
             actual = bench.host_reference(spec)
             self.assertIs(bench.core._mach_beamform, kernel)
         np.testing.assert_array_equal(actual, expected)
+
+    def test_cli_writes_failure_report_and_returns_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new" / "failure.json"
+            failure = {"status": "failed", "reference": {"error": "CUDA unavailable"}}
+            with patch.object(bench, "run_benchmark", return_value=failure), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = bench.main(["--output", str(output)])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output.read_text()), failure)
+            self.assertEqual(list(output.parent.iterdir()), [output])
 
     def test_comparison_rejects_invalid_or_degenerate_outputs(self):
         reference = np.ones((2, 1, 2, 3), dtype=np.complex64)
