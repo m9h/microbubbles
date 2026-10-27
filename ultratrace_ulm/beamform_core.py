@@ -19,6 +19,7 @@ The numerics here mirror the reference:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from operator import index
 
 import numpy as np
 
@@ -264,17 +265,36 @@ def prepare_tx_delays_for_row(
 # --------------------------------------------------------------------------- #
 # MACH beamform (port of the reference MACH wrapper)
 # --------------------------------------------------------------------------- #
+def validate_chunk_count(n_chunks: int) -> int:
+    """Reject invalid execution settings before allocating or touching output."""
+    try:
+        count = index(n_chunks)
+    except TypeError:
+        raise ValueError("n_chunks must be a positive integer") from None
+    if count < 1:
+        raise ValueError("n_chunks must be a positive integer")
+    return count
+
+
 def beamform_iq(
     iq_frames: np.ndarray,  # (loops, angles, rows, cols, time) complex
     tx_delays: np.ndarray,  # (angles, channels) seconds
     tx_delays_elev: np.ndarray,  # (angles, rows) seconds
     config: NeutralConfig,
+    *,
+    n_chunks: int = 1,
 ) -> tuple[np.ndarray, Grid]:
     """Beamform neutral IQ with the mach experimental kernel.
 
     Returns ``(compound_image, grid)`` where compound_image is
     ``(frames, elev, z, x)`` complex64 and ``grid`` arrays are ``(z, elev, x)``.
+
+    ``n_chunks`` splits the useful frames into balanced, nonempty GPU batches.
+    Preprocessing (including noise-frame removal) runs once. The imaging grid
+    and transmit arrivals are shared, while IQ and image buffers hold only one
+    batch. Host memory still holds the complete input and returned compound.
     """
+    n_chunks = validate_chunk_count(n_chunks)
     if not MACH_AVAILABLE:
         raise ImportError(
             "mach is not importable. MACH beamforming requires the GPU-only "
@@ -350,39 +370,48 @@ def beamform_iq(
             tx_arrivals_all[a, s0:s1] = cp.min(tx_delays_full[a, cp.newaxis, :] + dc, axis=1)
         del dc
 
-    iq_cp = cp.asarray(iq)
-    # Compound on the GPU: summing the per-angle results into one (n_points, n_frames)
-    # buffer avoids stacking num_angles full-size arrays on the host (on a DGX Spark the
-    # host stack/astype/sum of 4 x 2 GB took ~110 s against ~3 s of kernel time).
-    compound_cp = cp.zeros((n_scan, num_frames), dtype=cp.complex64)
-    for angle_idx in range(num_angles):
-        ch = iq_cp[:, angle_idx, :, :, :].reshape(num_frames, num_rows * num_cols, num_time)
-        ch = cp.transpose(ch, (1, 2, 0))[cp.newaxis, ...]  # (1, n_rx, n_samples, n_frames)
-
-        tx_arrivals = tx_arrivals_all[angle_idx][cp.newaxis, :]
-
-        bf = _mach_beamform(
-            channel_data=ch,
-            rx_coords_m=rx_coords_cp,
-            scan_coords_m=scan_coords_cp,
-            tx_wave_arrivals_s=tx_arrivals,
-            rx_start_s=config.rx_offset_s,
-            sampling_freq_hz=config.sampling_rate_hz,
-            f_number=config.f_number if config.f_number else 2.0,
-            sound_speed_m_s=config.speed_of_sound_m_s,
-            modulation_freq_hz=config.tx_freq_hz,
-            tukey_alpha=0.5,
-        )  # (n_points, n_frames)
-        compound_cp += bf
-        del bf
-
-    # (z, elev, x, F) -> (F, elev, z, x), transposed on the GPU, one copy to host
-    compound_cp = compound_cp.reshape(
-        grid.depth_pixels, grid.height_pixels, grid.width_pixels, num_frames
+    compound = np.empty(
+        (num_frames, grid.height_pixels, grid.depth_pixels, grid.width_pixels),
+        dtype=np.complex64,
     )
-    compound = cp.asnumpy(cp.ascontiguousarray(cp.transpose(compound_cp, (3, 1, 0, 2))))
-    del compound_cp
-    return compound.astype(np.complex64, copy=False), grid
+    batch_count = min(n_chunks, num_frames)
+    frames_per_batch, extra = divmod(num_frames, batch_count)
+    start = 0
+    for batch in range(batch_count):
+        size = frames_per_batch + (batch < extra)
+        stop = start + size
+        iq_cp = cp.asarray(iq[start:stop])
+        # Sum all angles on device, then transfer this batch only once.
+        compound_cp = cp.zeros((n_scan, size), dtype=cp.complex64)
+        for angle_idx in range(num_angles):
+            ch = iq_cp[:, angle_idx].reshape(size, num_rows * num_cols, num_time)
+            ch = cp.transpose(ch, (1, 2, 0))[cp.newaxis, ...]
+            bf = _mach_beamform(
+                channel_data=ch,
+                rx_coords_m=rx_coords_cp,
+                scan_coords_m=scan_coords_cp,
+                tx_wave_arrivals_s=tx_arrivals_all[angle_idx][cp.newaxis, :],
+                rx_start_s=config.rx_offset_s,
+                sampling_freq_hz=config.sampling_rate_hz,
+                f_number=config.f_number if config.f_number else 2.0,
+                sound_speed_m_s=config.speed_of_sound_m_s,
+                modulation_freq_hz=config.tx_freq_hz,
+                tukey_alpha=0.5,
+            )
+            compound_cp += bf
+            del bf, ch
+
+        # Write directly into the final host buffer; do not stack batch copies.
+        compound_cp = compound_cp.reshape(
+            grid.depth_pixels, grid.height_pixels, grid.width_pixels, size,
+        )
+        cp.asnumpy(
+            cp.ascontiguousarray(cp.transpose(compound_cp, (3, 1, 0, 2))),
+            out=compound[start:stop],
+        )
+        del compound_cp, iq_cp
+        start = stop
+    return compound, grid
 
 
 # --------------------------------------------------------------------------- #

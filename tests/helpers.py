@@ -46,7 +46,7 @@ def write_neutral(path, ids=range(6)):
             group["tx_delays_elev"] = np.zeros((2, 2))
 
 
-def fake_beamform(iq, *args):
+def fake_beamform(iq, *args, **kwargs):
     return np.full((2, 3, 11, 17), iq.real.flat[0], dtype=np.complex64), GRID
 
 
