@@ -148,6 +148,18 @@ the chunk count can increase kernel/transfer overhead; it does not reduce the
 shared transmit-distance workspace or the full host input/output allocations.
 Actual total GPU memory and timing still need measurement on a CUDA host.
 
+A reproducible [CUDA benchmark harness](BENCHMARKS.md) compares chunk settings
+in isolated processes and records synchronized timings, CuPy allocation peaks,
+host RSS, numerical differences and hardware/software provenance as JSON:
+
+```bash
+.venv/bin/python -m ultratrace_ulm.benchmark \
+  --output outputs/cuda-benchmark.json --chunks 1 2 4 8
+```
+
+It uses a small synthetic fixture and the installed CUDA extra. Hardware runs
+are still pending; CuPy pool measurements do not represent total device memory.
+
 Add `--resume` to continue an interrupted beamform with the same source,
 acquisition selection, grid, and TGC settings. Completed acquisitions are
 preserved; unfinished acquisitions are recomputed. The spatial TGC profile is
