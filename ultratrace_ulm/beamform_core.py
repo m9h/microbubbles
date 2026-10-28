@@ -385,7 +385,10 @@ def beamform_iq(
         compound_cp = cp.zeros((n_scan, size), dtype=cp.complex64)
         for angle_idx in range(num_angles):
             ch = iq_cp[:, angle_idx].reshape(size, num_rows * num_cols, num_time)
-            ch = cp.transpose(ch, (1, 2, 0))[cp.newaxis, ...]
+            # Contiguous on the device BEFORE the kernel: mach otherwise rearranges the
+            # transposed view itself ("array is not contiguous, rearranging will add
+            # latency") on every angle of every batch.
+            ch = cp.ascontiguousarray(cp.transpose(ch, (1, 2, 0)))[cp.newaxis, ...]
             bf = _mach_beamform(
                 channel_data=ch,
                 rx_coords_m=rx_coords_cp,
