@@ -146,7 +146,8 @@ once per batch. Grid/transmit-arrival data are shared across batches. This keeps
 the `(frames, elev, z, x)` complex64 output format and frame order. Increasing
 the chunk count can increase kernel/transfer overhead; it does not reduce the
 shared transmit-distance workspace or the full host input/output allocations.
-Actual total GPU memory and timing still need measurement on a CUDA host.
+GB10 CuPy allocation results are now reported in [BENCHMARKS.md](BENCHMARKS.md#reported-gb10-results).
+Total device-memory measurements and stable timing comparisons remain outstanding.
 
 A reproducible [CUDA benchmark harness](BENCHMARKS.md) compares chunk settings
 in isolated processes and records synchronized timings, CuPy allocation peaks,
@@ -157,8 +158,9 @@ host RSS, numerical differences and hardware/software provenance as JSON:
   --output outputs/cuda-benchmark.json --chunks 1 2 4 8
 ```
 
-It uses a small synthetic fixture and the installed CUDA extra. Hardware runs
-are still pending; CuPy pool measurements do not represent total device memory.
+It uses a small synthetic fixture and the installed CUDA environment. The GB10
+reports use a local MACH source build; CuPy pool measurements do not represent
+total device memory, and the reported timings do not establish a speedup.
 
 Add `--resume` to continue an interrupted beamform with the same source,
 acquisition selection, grid, and TGC settings. Completed acquisitions are
