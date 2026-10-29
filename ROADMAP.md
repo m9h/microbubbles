@@ -10,7 +10,7 @@ document records the next milestones and the evidence needed to complete them.
 - Keep acquisition identities and tracking boundaries intact.
 - Run CPU regressions in CI, with an opt-in real CUDA comparison.
 
-## 1. GPU frame batching — implemented; CUDA validation pending
+## 1. GPU frame batching — merged; GB10 CUDA validation reported
 
 Make the existing `--n-chunks` control functional in `beamform` and `run`.
 Preprocess once, share the grid/transmit arrivals, and hold one frame batch's IQ
@@ -20,28 +20,39 @@ Apply the same setting during spatial TGC estimation.
 CPU regressions verify exact composition, useful-frame ordering, uneven batches,
 buffer lifetimes, and rejection of invalid settings before writes/downloads.
 The opt-in CUDA test compares host compounding with both single-batch and
-chunked MACH execution. Run it on supported CUDA hardware before declaring
-hardware validation complete; no GPU timing or peak-memory result is recorded yet.
+chunked MACH execution. The [PR #2 review](https://github.com/m9h/microbubbles/pull/2#issuecomment-6454827137)
+reports eight CUDA tests passing on a DGX Spark/GB10 with CuPy 14.2.0 and a
+locally built MACH 0.2.1. This validates that reported environment, not every
+supported device or the exact locked dependencies. PR #2 merged on October 27.
 
-## 2. Reproducible CUDA performance measurements — harness implemented; hardware runs pending
+## 2. Reproducible CUDA performance measurements — GB10 memory results reported; timing validation pending
 
 The [benchmark command and protocol](BENCHMARKS.md) now provide a deterministic
 synthetic fixture, separate worker processes for each setting, synchronized
 warm-up/repeated timings, a host-compounded numerical reference, and JSON output.
 An additional instrumented pass distinguishes CuPy pool live/reserved peaks;
 process RSS is recorded before output serialization. CPU protocol tests and an
-opt-in CUDA smoke test cover the harness. Neither the real CUDA tests nor GPU
-timing/memory measurements have been executed on the development Mac.
+opt-in CUDA smoke test cover the harness. PR #3 merged on October 27.
+
+[PR #4](https://github.com/m9h/microbubbles/pull/4) adds a magnitude-scaled
+comparison floor, contiguous kernel input and early device initialization for
+GB10. It reports 21 passing CUDA-enabled tests and a reduction in CuPy live peak
+from 1417 MiB at one chunk to 272 MiB at eight/sixteen chunks for the larger
+fixture. See [BENCHMARKS.md](BENCHMARKS.md#reported-gb10-results) for the reported
+table and limits. The development Mac has not independently rerun CUDA tests.
+Timings vary substantially; these results do not establish a speedup.
 
 Remaining acceptance work:
 
-- Run both CUDA checks and collect the documented small/larger fixture reports
-  across frame/chunk counts on supported hardware.
+- Archive the original GB10 JSON reports with exact hardware/software provenance;
+  only the PR's summary table is currently available in the repository.
+- Collect stable small/larger-fixture timings across frame/chunk counts under
+  controlled conditions or on another CUDA host, and run the CUDA checks there.
 - Review numerical errors, synchronized timings, host RSS, and CuPy allocation
   peaks; profile allocations outside CuPy separately before claiming total
   device-memory savings.
-- Archive machine-readable results with hardware/software provenance. Use these
-  measurements to choose batch defaults and assess the next optimizations.
+- Use reproducible measurements to choose batch defaults and assess the next
+  optimizations; keep the existing defaults until then.
 
 ## 3. Bound remaining workspaces and host memory — planned
 

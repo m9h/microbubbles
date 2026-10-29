@@ -1,7 +1,9 @@
 # CUDA beamforming benchmarks
 
-The harness is implemented; hardware results are still pending. CPU tests check
-the measurement protocol, not CUDA correctness, throughput, or total GPU memory.
+The harness has reported CUDA correctness and memory results on a DGX Spark
+(GB10); stable timing and archived JSON reports remain outstanding. See the
+[hardware results below](#reported-gb10-results). CPU tests check the measurement
+protocol, not CUDA correctness, throughput, or total GPU memory.
 
 ## Run on a CUDA host
 
@@ -18,7 +20,11 @@ ULM_TEST_CUDA=1 .venv/bin/python -m unittest tests.test_beamform_compound tests.
 ```
 
 Use `mach-cuda13` for a CUDA 13 host. The installed environment's Python is used
-for every child process. The command generates deterministic complex64 random
+for every child process. The [GB10 validation report](https://github.com/m9h/microbubbles/pull/2#issuecomment-6454827137)
+used a local MACH 0.2.1 source build on aarch64 because the available PyPI wheel
+was x86_64-only; the extra alone did not supply MACH on that machine. That report
+used CuPy 14.2.0, so it is not validation of the exact locked dependency set.
+The command generates deterministic complex64 random
 IQ and zero transmit delays locally; it does not download the 96 GB sample.
 It is a numerical/performance fixture, not a physical microbubble simulation.
 
@@ -43,7 +49,10 @@ settings, git revision, and dirty flag are recorded in the JSON report.
 Each reference and each chunk setting runs sequentially in a fresh interpreter.
 No setting inherits another setting's CUDA context or memory pool. CuPy's disk
 kernel cache can be reused across processes: warm-up is **not** a guaranteed
-cold compilation measurement.
+cold compilation measurement. Each worker performs a small device allocation
+and synchronizes before constructing its host fixture. This initialization is
+outside timed calls and addresses the intermittent first-allocation failure
+reported on GB10 after large NumPy allocations.
 
 1. Build a reference in its own process by copying each real MACH angle result
    to the host and summing in complex64. Use single-frame GPU batches so the
@@ -62,9 +71,14 @@ cold compilation measurement.
    from the timing samples.
 5. Save that call's output to a temporary file, then compare it with the common
    reference in the coordinator. Require matching shape, complex64, finite
-   values, a nonzero reference, and elementwise `rtol=2e-6, atol=1e-6`. Record
-   maximum absolute and relative L2 error. The tolerance matches the existing
-   opt-in CUDA composition test and still needs confirmation on real hardware.
+   values, a nonzero reference, and elementwise
+   `abs(actual - reference) <= atol_effective + 2e-6 * abs(reference)`, with
+   `atol_effective = 1e-6 + 1e-5 * max(abs(reference))` across the whole reference.
+   Record `reference_max_abs`, `atol_effective`, maximum absolute error and
+   relative L2 error. The magnitude-scaled floor accommodates the discrepancies
+   reported for the larger GB10 fixture. It is more permissive for weak voxels
+   than a purely local relative tolerance and is specific to this benchmark.
+   The separate small CUDA composition test retains its original tolerances.
 
 This checks compounding, batching and layout against the same MACH kernel. It
 does not independently validate the beamforming physics, SVD cutoffs, detections,
@@ -106,5 +120,28 @@ CPU protocol checks:
 .venv/bin/python -m unittest tests.test_benchmark -v
 ```
 
-Until actual CUDA reports have been collected and reviewed, retain the current
-batch defaults and keep hardware validation marked pending in `ROADMAP.md`.
+## Reported GB10 results
+
+[PR #4](https://github.com/m9h/microbubbles/pull/4), co-authored by Claude Opus 5.5,
+reports the following results for the 128-frame, 9-angle larger fixture on an
+otherwise idle DGX Spark. These values are transcribed from the PR summary;
+raw JSON reports have not been committed or attached there, and this Mac review
+did not independently rerun CUDA measurements.
+
+| Chunks | Comparison | Relative L2 error | CuPy live peak | Process RSS | Median time |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Passed | 1.2e-7 | 1417 MiB | 4.8 GB | 8.6 s |
+| 2 | Passed | 1.2e-7 | 710 MiB | 3.8 GB | 9.6 s |
+| 4 | Passed | 1.2e-7 | 357 MiB | 3.3 GB | 4.7 s |
+| 8 | Passed | 1.2e-7 | 272 MiB | 3.0 GB | 5.6 s |
+| 16 | Passed | 1.2e-7 | 272 MiB | 2.9 GB | 6.7 s |
+
+The PR reports 21 passing tests with CUDA opt-ins enabled. Its memory results
+support reduced frame-dependent allocations and a remaining workspace floor;
+the numbers describe the CuPy pool, not total device memory. Individual timing
+samples ranged from 2.2 to 33.6 seconds for one setting, so these medians do not
+establish a speedup or justify changing the default chunk count. Unified-memory
+migration or clock behavior were suggested explanations, not established causes.
+
+Next: archive the original JSON with exact software/hardware provenance, then
+collect repeatable timings under controlled conditions or on another CUDA host.

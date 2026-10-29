@@ -1,4 +1,4 @@
-# Development handoff — resumed 2026-10-26 (America/Los_Angeles)
+# Development handoff — reviewed 2026-10-28 (America/Los_Angeles)
 
 Originally saved before a system reboot; updated after resuming development.
 Read this file, `ROADMAP.md`, and `BENCHMARKS.md` before continuing.
@@ -7,14 +7,15 @@ Read this file, `ROADMAP.md`, and `BENCHMARKS.md` before continuing.
 
 - GitHub: https://github.com/m9h/microbubbles (plural).
 - Local checkout: `/Users/mhough/Workspace/microbubbles`.
-- Current branch: `cuda-benchmark`, based on `gpu-frame-chunking` at `41eb777`.
-- The benchmark work is a separate review increment on top of PR #2.
+- Latest review branch: `bench-tolerance-contiguous` for
+  [PR #4](https://github.com/m9h/microbubbles/pull/4), implementation `95f8b0f`.
+- PRs #2 and #3 merged into `main` on October 27; main was `126f23a` before
+  PR #4. Check the live PR state for the outcome of this review/merge session.
 - Foundation fixes are merged into `main` at `e5b9a14` via
   [PR #1](https://github.com/m9h/microbubbles/pull/1).
-- Frame batching is committed and pushed in
-  [PR #2](https://github.com/m9h/microbubbles/pull/2), targeting `main`.
-  PR #2 was **open, not merged**, when this checkpoint was written.
-- GitHub Actions passed on Python 3.10 and 3.14 for `f2f2a9e`.
+- Frame batching is merged in [PR #2](https://github.com/m9h/microbubbles/pull/2);
+  the benchmark harness is merged in [PR #3](https://github.com/m9h/microbubbles/pull/3).
+- GitHub Actions passed on Python 3.10 and 3.14 for `95f8b0f`.
 - No sample dataset has been downloaded. The only manual benchmark invocation
   on this Mac produced an expected missing-CUDA failure report in `/private/tmp`.
 
@@ -28,9 +29,8 @@ GitHub issues are disabled; `ROADMAP.md` records the milestones.
 The latest technical question compared the Kidger SciML ecosystem with SCICO.
 The response was an architecture recommendation, not an accepted migration plan.
 No JAX, Equinox, Optimistix, Diffrax, Lineax, or SCICO migration has been started.
-The latest user request was to restart the work after reboot. Development resumed
-with roadmap milestone 2, the benchmark harness; no numerical backend migration
-has been started.
+The latest user request is to check the other agent's updates and merge the new
+branch. No numerical backend migration has been started.
 
 ## Completed foundation (PR #1, merged)
 
@@ -47,7 +47,7 @@ has been started.
 - Cached per-acquisition track combination respects selection and frame offsets.
 - CPU regression CI and an opt-in real CUDA comparison.
 
-## Completed frame batching (PR #2, awaiting merge)
+## Completed frame batching (PR #2, merged)
 
 - Red tests: `e7bac89`; implementation and roadmap: `f2f2a9e`.
 - `beamform_iq(..., n_chunks=...)` validates positive integers, preprocesses IQ
@@ -63,13 +63,13 @@ has been started.
 - Full host IQ/output arrays and the transmit-distance workspace still exist;
   frame batching does not solve those memory costs.
 
-Validation recorded before this documentation-only checkpoint: 26 tests total,
+Validation recorded at the original frame-batching checkpoint: 26 tests total,
 25 passing and 1 real-CUDA test skipped. CPU stand-ins cover exact composition,
 frame order, uneven/excessive chunk counts, noise removal, and device-buffer
 lifetimes. No real CUDA correctness run, timing, or peak-memory measurement has
 been performed in this local session (Darwin arm64 without CUDA).
 
-## CUDA benchmark harness — implemented; hardware results pending
+## CUDA benchmark harness — merged; GB10 results reported
 
 - Red tests committed at `d3c4fd2` before implementing the benchmark module.
 - Command: `.venv/bin/python -m ultratrace_ulm.benchmark --output outputs/cuda-benchmark.json`.
@@ -82,11 +82,30 @@ been performed in this local session (Darwin arm64 without CUDA).
   failed before changing the reference to single-frame batches, then passed.
 - Every setting compares its memory-pass complex64 output against the common
   reference. Failed cases are reported and later settings still run.
-- Full local suite: 37 tests, 35 passing and 2 opt-in CUDA tests skipped.
+- Original harness local suite: 37 tests, 35 passing and 2 opt-in CUDA tests skipped.
   Runtime doctor, CLI help, missing-CUDA failure reporting and whitespace checks
-  pass. There are still no real CUDA timing, correctness or memory results.
+  passed at that checkpoint. See the updated hardware report below.
 - Read `BENCHMARKS.md` before interpreting metrics: CuPy counters exclude other
   allocators and CUDA context memory, and do not establish total VRAM savings.
+
+## GB10 follow-up and PR #4 review
+
+- Claude Opus 5.5 co-authored `95f8b0f`, adding a magnitude-scaled benchmark
+  tolerance, contiguous channel input to MACH, and a first device allocation
+  before constructing large host fixtures.
+- The PR #2 review reports eight passing CUDA tests on GB10, using CuPy 14.2.0
+  and locally built MACH 0.2.1 on aarch64. PR #4 reports 21 CUDA-enabled tests
+  passing and a larger-fixture CuPy live peak of 1417 MiB at one chunk versus
+  272 MiB at eight/sixteen chunks.
+- These are the other agent's reported hardware results. No independent CUDA
+  rerun was possible on this Mac. Original machine-readable reports still need
+  archiving; BENCHMARKS.md links the source and reproduces its summary table.
+- PR #4 local review: 44 tests run, 42 passed and 2 CUDA opt-ins skipped;
+  runtime doctor and whitespace checks passed. Review also reconciles benchmark
+  tolerance documentation and stale roadmap/handoff status.
+- Timing varies widely (2.2–33.6 seconds within one setting). Keep the existing
+  defaults and make no speedup claim; collect stable timings before choosing
+  further kernel optimizations.
 
 ## Architecture recommendation discussed
 
@@ -151,11 +170,11 @@ Official references consulted:
 cd /Users/mhough/Workspace/microbubbles
 git status --short --branch
 git fetch origin
-gh pr view 2 --repo m9h/microbubbles
+gh pr view 4 --repo m9h/microbubbles
 ```
 
-Read `ROADMAP.md` for the committed sequence. Its next step is running the new
-benchmark harness on CUDA hardware; the tiled-SVD/JAX experiment above is the later recommendation
+Read `ROADMAP.md` for the committed sequence. Its next step is archiving the GB10
+reports and collecting stable CUDA timings; the tiled-SVD/JAX experiment above is the later recommendation
 from the architecture discussion, not a completed change to that sequence.
 
 For CPU verification when resuming implementation:
